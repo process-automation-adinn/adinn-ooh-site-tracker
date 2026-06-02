@@ -1,0 +1,27 @@
+# Environment secrets
+.env
+backend/.env
+frontend/.env
+
+# Python
+backend/venv/
+venv/
+__pycache__/
+*.pyc
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# OS files
+.DS_Store
+
+# Uploaded files / private documents
+backend/app/uploads/*
+!backend/app/uploads/.gitkeep
+
+# Local databases / backups
+*.db
+*.sqlite
+*.sqlite3
+adinn-ooh-site-tracker-backup/
