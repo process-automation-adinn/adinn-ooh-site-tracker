@@ -19,7 +19,7 @@ class UserCreate(BaseModel):
     phone: str | None = None
     password: str
     role: str = "employee"
-    can_crud: bool = False
+    can_crud: bool = True
 
 
 class UserUpdate(BaseModel):
@@ -29,7 +29,7 @@ class UserUpdate(BaseModel):
     password: str | None = None
     role: str = "employee"
     is_active: bool = True
-    can_crud: bool = False
+    can_crud: bool = True
 
 
 class UserOut(BaseModel):
@@ -39,7 +39,7 @@ class UserOut(BaseModel):
     phone: str | None = None
     role: str
     is_active: bool = True
-    can_crud: bool = False
+    can_crud: bool = True
     created_at: datetime
 
 
@@ -62,6 +62,13 @@ class CrudPermissionUpdate(BaseModel):
     can_crud: bool
 
 
+class SizeBoxOut(BaseModel):
+    label: str | None = None
+    width_ft: float
+    height_ft: float
+    area_sqft: float
+
+
 class SiteOut(BaseModel):
     id: int
     created_by_user_id: int
@@ -76,7 +83,9 @@ class SiteOut(BaseModel):
     height_ft: float
     width_ft: float
     area_sqft: float
+    size_boxes: list[SizeBoxOut] = Field(default_factory=list)
     rental_type: str
+    rent_amount: float = 0
     advance_amount: float
     light_type: str
     side_type: str
@@ -87,6 +96,9 @@ class SiteOut(BaseModel):
     agreement_tenure: str
     agreement_start_date: date
     agreement_end_date: date
+    agreement_created: bool = False
+    agreement_created_at: datetime | None = None
+    agreement_status: str = "Agreement Not Created"
     remarks: dict[str, str] = Field(default_factory=dict)
     documents: DocumentOut
     created_at: datetime

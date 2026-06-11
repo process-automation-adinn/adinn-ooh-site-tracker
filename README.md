@@ -195,3 +195,30 @@ To fully back up the app:
 2. Copy the uploads folder.
 
 Both are needed because Neon stores metadata and the uploads folder stores actual photos/documents.
+
+## 2026 Update - Agreement Lock, Size Boxes, Rent, and Per-Site Exports
+
+This version includes a safe schema migration. On backend startup, the app adds the new columns without deleting existing OOH data:
+
+- `size_boxes` for one or more size rows per site
+- `rent_amount` for Rent in Rs
+- `agreement_created` and `agreement_created_at` for agreement lock status
+
+Existing width/height/area values are preserved and backfilled into the new `size_boxes` structure.
+
+### New Workflow Rules
+
+- Width is captured before Height in the form.
+- Double-sided hoardings support multiple size boxes.
+- Rent in Rs is captured near Rental type.
+- All employees get CRUD access by default.
+- Employees can edit/delete their own records only until Agreement is created.
+- Once Agreement is created, only Admin can edit/delete that OOH record.
+- Each OOH record shows either `Agreement Not Created` or `Agreement Created`.
+- Each OOH detail can be exported as PDF or DOCX.
+
+### Deployment Note
+
+After pulling this update, redeploy both backend and frontend.
+
+Render backend will automatically run the safe migration during startup.

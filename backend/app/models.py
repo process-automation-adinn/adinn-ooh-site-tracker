@@ -16,7 +16,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(30), default="employee", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    can_crud: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_crud: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
@@ -40,7 +40,9 @@ class OOHSite(Base):
     height_ft: Mapped[float] = mapped_column(Float, nullable=False)
     width_ft: Mapped[float] = mapped_column(Float, nullable=False)
     area_sqft: Mapped[float] = mapped_column(Float, nullable=False)
+    size_boxes: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     rental_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    rent_amount: Mapped[float] = mapped_column(Float, default=0, nullable=False)
     advance_amount: Mapped[float] = mapped_column(Float, default=0, nullable=False)
     light_type: Mapped[str] = mapped_column(String(50), nullable=False)
     side_type: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -52,6 +54,8 @@ class OOHSite(Base):
     agreement_tenure: Mapped[str] = mapped_column(String(30), nullable=False)
     agreement_start_date = mapped_column(Date, nullable=False)
     agreement_end_date = mapped_column(Date, nullable=False)
+    agreement_created: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    agreement_created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     remarks: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
 
     site_photo_file: Mapped[str | None] = mapped_column(String(500), nullable=True)

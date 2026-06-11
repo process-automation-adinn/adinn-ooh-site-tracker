@@ -12,6 +12,7 @@ const emptyForm = {
   height_ft: '',
   width_ft: '',
   rental_type: 'Monthly',
+  rent_amount: '',
   advance_amount: '',
   light_type: 'Front Light',
   side_type: 'Single',
@@ -46,6 +47,46 @@ function siteToRemarks(site) {
 }
 
 
+function defaultSizeBoxes(sideType = 'Single') {
+  return sideType === 'Double'
+    ? [
+        { label: 'Side 1', width_ft: '', height_ft: '' },
+        { label: 'Side 2', width_ft: '', height_ft: '' },
+      ]
+    : [{ label: 'Side 1', width_ft: '', height_ft: '' }];
+}
+
+function normalizeSizeBoxesForForm(site) {
+  if (Array.isArray(site?.size_boxes) && site.size_boxes.length) {
+    if (site?.side_type === 'Double') {
+      const first = site.size_boxes[0] || {};
+      const second = site.size_boxes[1] || {};
+      return [
+        { label: 'Side 1', width_ft: first.width_ft ?? '', height_ft: first.height_ft ?? '' },
+        { label: 'Side 2', width_ft: second.width_ft ?? '', height_ft: second.height_ft ?? '' },
+      ];
+    }
+    const first = site.size_boxes[0] || {};
+    return [{ label: 'Side 1', width_ft: first.width_ft ?? '', height_ft: first.height_ft ?? '' }];
+  }
+  return [{ label: 'Side 1', width_ft: site?.width_ft ?? '', height_ft: site?.height_ft ?? '' }];
+}
+
+function calculateSizeArea(sizeBoxes) {
+  return sizeBoxes.reduce((sum, box) => {
+    const width = Number(box.width_ft || 0);
+    const height = Number(box.height_ft || 0);
+    return sum + (width > 0 && height > 0 ? width * height : 0);
+  }, 0);
+}
+
+function formatDateTime(value) {
+  if (!value) return '-';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+}
+
 function siteToForm(site) {
   return {
     hoarding_location: site?.hoarding_location || '',
@@ -58,6 +99,7 @@ function siteToForm(site) {
     height_ft: site?.height_ft ?? '',
     width_ft: site?.width_ft ?? '',
     rental_type: site?.rental_type || 'Monthly',
+    rent_amount: site?.rent_amount ?? '',
     advance_amount: site?.advance_amount ?? '',
     light_type: site?.light_type || 'Front Light',
     side_type: site?.side_type || 'Single',
@@ -127,7 +169,7 @@ function Login({ onLogin }) {
         <div className="login-highlights">
           <span>Role-based access</span>
           <span>Admin-controlled CRUD permissions</span>
-          <span>MongoDB data storage</span>
+          <span>Neon PostgreSQL data storage</span>
           <span>Responsive field visit form</span>
         </div>
       </section>
@@ -210,7 +252,6 @@ function Header({ user, activeTab, setActiveTab, onLogout }) {
 }
 
 function Dashboard({ sites }) {
-  const totalArea = sites.reduce((sum, site) => sum + Number(site.area_sqft || 0), 0);
   const uploadedDocs = sites.reduce((sum, site) => {
     const docs = site.documents || {};
     return sum + ['site_photo_uploaded', 'landlord_photo_uploaded', 'aadhaar_uploaded', 'pan_uploaded', 'property_tax_uploaded', 'passbook_uploaded'].filter((key) => docs[key]).length;
@@ -227,7 +268,6 @@ function Dashboard({ sites }) {
     <section className="page-stack">
       <div className="grid stats-grid">
         <Stat title="Total OOH Sites" value={sites.length} hint="All submitted records" />
-        <Stat title="Total Area" value={`${Math.round(totalArea).toLocaleString('en-IN')} sqft`} hint="Combined media area" />
         <Stat title="Monthly Rentals" value={monthly} hint="Sites on monthly rental" />
         <Stat title="Agreements Expiring" value={expiringSoon} hint="Next 90 days" />
       </div>
@@ -308,6 +348,7 @@ function UploadField({ label, name, file, onChange }) {
 function SiteForm({ onCreated, initialSite = null, mode = 'create', onSaved, onCancel }) {
   const isEdit = mode === 'edit';
   const [form, setForm] = useState(() => (initialSite ? siteToForm(initialSite) : emptyForm));
+  const [sizeBoxes, setSizeBoxes] = useState(() => (initialSite ? normalizeSizeBoxesForForm(initialSite) : defaultSizeBoxes(emptyForm.side_type)));
   const [files, setFiles] = useState(emptyFiles);
   const [remarks, setRemarks] = useState(() => (initialSite ? siteToRemarks(initialSite) : {}));
   const [message, setMessage] = useState('');
@@ -317,6 +358,7 @@ function SiteForm({ onCreated, initialSite = null, mode = 'create', onSaved, onC
 
   useEffect(() => {
     setForm(initialSite ? siteToForm(initialSite) : emptyForm);
+    setSizeBoxes(initialSite ? normalizeSizeBoxesForForm(initialSite) : defaultSizeBoxes(emptyForm.side_type));
     setFiles(emptyFiles);
     setRemarks(initialSite ? siteToRemarks(initialSite) : {});
     setMessage('');
@@ -324,21 +366,35 @@ function SiteForm({ onCreated, initialSite = null, mode = 'create', onSaved, onC
   }, [initialSite?.id]);
 
   const area = useMemo(() => {
-    const h = Number(form.height_ft || 0);
-    const w = Number(form.width_ft || 0);
-    return h > 0 && w > 0 ? (h * w).toFixed(2) : '';
-  }, [form.height_ft, form.width_ft]);
+    const total = calculateSizeArea(sizeBoxes);
+    return total > 0 ? total.toFixed(2) : '';
+  }, [sizeBoxes]);
 
   function update(name, value) {
     setForm((prev) => {
       const next = { ...prev, [name]: value };
       if (name === 'side_type' && value === 'Single') next.towards_2 = '';
+      if (name === 'side_type') {
+        setSizeBoxes((previous) => {
+          if (value === 'Single') return [{ ...(previous[0] || {}), label: 'Side 1', width_ft: previous[0]?.width_ft || '', height_ft: previous[0]?.height_ft || '' }];
+          const first = previous[0] || { width_ft: '', height_ft: '' };
+          const second = previous[1] || { width_ft: '', height_ft: '' };
+          return [
+            { ...first, label: 'Side 1' },
+            { ...second, label: 'Side 2' },
+          ];
+        });
+      }
       if (name === 'agreement_start_date' || name === 'agreement_tenure') {
         const years = next.agreement_tenure === '5 Years' ? 5 : 3;
         next.agreement_end_date = addYearsMinusOneDay(next.agreement_start_date, years);
       }
       return next;
     });
+  }
+
+  function updateSizeBox(index, field, value) {
+    setSizeBoxes((previous) => previous.map((box, idx) => (idx === index ? { ...box, [field]: value } : box)));
   }
 
   function updateFile(name, file) {
@@ -370,15 +426,30 @@ function SiteForm({ onCreated, initialSite = null, mode = 'create', onSaved, onC
     );
   }
 
-  async function submit(e) {
-    e.preventDefault();
+  async function saveSite(createAgreement = false) {
     setError('');
     setMessage('');
+    const validBoxes = sizeBoxes.filter((box) => Number(box.width_ft) > 0 && Number(box.height_ft) > 0);
+    if (!validBoxes.length) {
+      setError('At least one valid size box is required.');
+      return;
+    }
     setLoading(true);
     try {
+      const firstBox = validBoxes[0];
+      const normalizedBoxes = validBoxes.map((box, index) => ({
+        label: box.label || `Size ${index + 1}`,
+        width_ft: Number(box.width_ft),
+        height_ft: Number(box.height_ft),
+        area_sqft: Number(box.width_ft) * Number(box.height_ft),
+      }));
       const body = new FormData();
       Object.entries(form).forEach(([key, value]) => body.append(key, value ?? ''));
+      body.set('width_ft', firstBox.width_ft ?? '');
+      body.set('height_ft', firstBox.height_ft ?? '');
+      body.append('size_boxes_json', JSON.stringify(normalizedBoxes));
       body.append('remarks_json', JSON.stringify(remarks));
+      if (!isEdit) body.append('create_agreement', createAgreement ? 'true' : 'false');
       Object.entries(files).forEach(([key, file]) => {
         if (file) body.append(key, file);
       });
@@ -386,6 +457,7 @@ function SiteForm({ onCreated, initialSite = null, mode = 'create', onSaved, onC
       setMessage(isEdit ? `OOH site #${saved.id} updated successfully.` : `OOH site #${saved.id} saved successfully.`);
       if (!isEdit) {
         setForm(emptyForm);
+        setSizeBoxes(defaultSizeBoxes(emptyForm.side_type));
         setFiles(emptyFiles);
         setRemarks({});
         onCreated?.();
@@ -398,6 +470,17 @@ function SiteForm({ onCreated, initialSite = null, mode = 'create', onSaved, onC
     } finally {
       setLoading(false);
     }
+  }
+
+  async function submit(e) {
+    e.preventDefault();
+    await saveSite(false);
+  }
+
+  async function confirmAndCreateAgreement() {
+    const ok = window.confirm('Create agreement for this OOH site? Warning: once confirmed, employees cannot edit or delete this record. Only admin can edit/delete after agreement is created.');
+    if (!ok) return;
+    await saveSite(true);
   }
 
   return (
@@ -429,32 +512,56 @@ function SiteForm({ onCreated, initialSite = null, mode = 'create', onSaved, onC
       </section>
 
       <section className="form-section">
-        <SectionHeader number="03" title="Size, Rental & Display" description="Area is calculated automatically in square feet." remarkKey="size_rental_display" remarks={remarks} onRemarkChange={updateRemark} />
-        <div className="grid four">
-          <Field label="Height in feet" required><input type="number" min="0" step="0.01" value={form.height_ft} onChange={(e) => update('height_ft', e.target.value)} required /></Field>
-          <Field label="Width in feet" required><input type="number" min="0" step="0.01" value={form.width_ft} onChange={(e) => update('width_ft', e.target.value)} required /></Field>
-          <Field label="Area in sqft"><input value={area} readOnly placeholder="Auto" /></Field>
-          <Field label="Rental" required>
-            <select value={form.rental_type} onChange={(e) => update('rental_type', e.target.value)}>
-              <option>Annually</option><option>Half Yearly</option><option>Quarterly</option><option>Monthly</option>
-            </select>
-          </Field>
-          <Field label="Advance in Rs"><input type="number" min="0" step="1" value={form.advance_amount} onChange={(e) => update('advance_amount', e.target.value)} /></Field>
-          <Field label="Light" required>
-            <select value={form.light_type} onChange={(e) => update('light_type', e.target.value)}>
-              <option>Front Light</option><option>Non Light</option><option>LED</option>
-            </select>
-          </Field>
+        <SectionHeader number="03" title="Size, Rental & Display" description="Enter side-wise size, rental and display details." remarkKey="size_rental_display" remarks={remarks} onRemarkChange={updateRemark} />
+        <div className="grid three">
           <Field label="Side" required>
             <select value={form.side_type} onChange={(e) => update('side_type', e.target.value)}>
               <option>Single</option><option>Double</option>
             </select>
           </Field>
+          <Field label="Light" required>
+            <select value={form.light_type} onChange={(e) => update('light_type', e.target.value)}>
+              <option>Front Light</option><option>Non Light</option><option>LED</option>
+            </select>
+          </Field>
         </div>
-        <div className="grid two direction-grid">
-          <Field label={form.side_type === 'Single' ? 'Towards' : 'Towards 1'} required><input value={form.towards_1} onChange={(e) => update('towards_1', e.target.value)} required placeholder="Example: Chennai to Tambaram" /></Field>
-          {form.side_type === 'Double' && <Field label="Towards 2" required><input value={form.towards_2} onChange={(e) => update('towards_2', e.target.value)} required placeholder="Example: Tambaram to Chennai" /></Field>}
+        <div className="size-box-panel">
+          <div className="size-box-head">
+            <strong>{form.side_type === 'Double' ? 'Two-sided size details' : 'Size details'}</strong>
+          </div>
+          {sizeBoxes.map((box, index) => {
+            const towardsKey = index === 0 ? 'towards_1' : 'towards_2';
+            const showTowards = form.side_type === 'Single' ? index === 0 : index < 2;
+            return (
+              <div className="size-box-row" key={index}>
+                <Field label="Label"><input value={box.label || `Side ${index + 1}`} onChange={(e) => updateSizeBox(index, 'label', e.target.value)} placeholder={`Side ${index + 1}`} /></Field>
+                <Field label="Width in feet" required><input type="number" min="0" step="0.01" value={box.width_ft} onChange={(e) => updateSizeBox(index, 'width_ft', e.target.value)} required /></Field>
+                <Field label="Height in feet" required><input type="number" min="0" step="0.01" value={box.height_ft} onChange={(e) => updateSizeBox(index, 'height_ft', e.target.value)} required /></Field>
+                <Field label="Area"><input value={Number(box.width_ft || 0) > 0 && Number(box.height_ft || 0) > 0 ? (Number(box.width_ft) * Number(box.height_ft)).toFixed(2) : ''} readOnly placeholder="Auto" /></Field>
+                {showTowards && (
+                  <Field label={form.side_type === 'Single' ? 'Towards' : `Towards ${index + 1}`} required>
+                    <input
+                      value={form[towardsKey]}
+                      onChange={(e) => update(towardsKey, e.target.value)}
+                      required
+                      placeholder={index === 0 ? 'Example: Chennai to Tambaram' : 'Example: Tambaram to Chennai'}
+                    />
+                  </Field>
+                )}
+              </div>
+            );
+          })}
         </div>
+        <div className="grid four">
+          <Field label="Rental" required>
+            <select value={form.rental_type} onChange={(e) => update('rental_type', e.target.value)}>
+              <option>Annually</option><option>Half Yearly</option><option>Quarterly</option><option>Monthly</option>
+            </select>
+          </Field>
+          <Field label="Rent in Rs"><input type="number" min="0" step="1" value={form.rent_amount} onChange={(e) => update('rent_amount', e.target.value)} /></Field>
+          <Field label="Advance in Rs"><input type="number" min="0" step="1" value={form.advance_amount} onChange={(e) => update('advance_amount', e.target.value)} /></Field>
+        </div>
+
       </section>
 
       <section className="form-section">
@@ -503,10 +610,11 @@ function SiteForm({ onCreated, initialSite = null, mode = 'create', onSaved, onC
       <div className="sticky-submit">
         <div>
           <strong>{isEdit ? 'Ready to update?' : 'Ready to submit?'}</strong>
-          <span>Area: {area || '0'} sqft | Advance: {formatCurrency(form.advance_amount)}</span>
+          <span>Rent: {formatCurrency(form.rent_amount)} | Advance: {formatCurrency(form.advance_amount)}</span>
         </div>
         <div className="submit-actions">
           {isEdit && <button className="ghost-btn" type="button" onClick={onCancel}>Cancel</button>}
+          {!isEdit && <button className="secondary-btn" type="button" onClick={confirmAndCreateAgreement} disabled={loading}>{loading ? 'Saving...' : 'Create Agreement'}</button>}
           <button className="primary-btn" type="submit" disabled={loading}>{loading ? (isEdit ? 'Updating...' : 'Saving...') : (isEdit ? 'Update OOH Site' : 'Submit OOH Site')}</button>
         </div>
       </div>
@@ -522,7 +630,8 @@ function Records({ sites, reload, user }) {
   const [deletingId, setDeletingId] = useState(null);
   const isAdmin = user?.role === 'admin';
   const hasEmployeeCrud = Boolean(user?.can_crud);
-  const canCrudFor = (site) => isAdmin || (hasEmployeeCrud && site.created_by_user_id === user?.id);
+  const canCrudFor = (site) => isAdmin || (hasEmployeeCrud && site.created_by_user_id === user?.id && !site.agreement_created);
+  const canCreateAgreement = (site) => !site.agreement_created && (isAdmin || site.created_by_user_id === user?.id);
 
   const filtered = useMemo(() => {
     const q = query.toLowerCase();
@@ -552,6 +661,34 @@ function Records({ sites, reload, user }) {
       alert(err.message);
     } finally {
       setExporting(false);
+    }
+  }
+
+  async function downloadSiteExport(site, format) {
+    try {
+      const response = await apiFetch(`/api/sites/${site.id}/export/${format}`);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ooh_site_${site.id}.${format}`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function createAgreement(site) {
+    if (!canCreateAgreement(site)) return;
+    const ok = window.confirm('Create agreement for this OOH site? Warning: once confirmed, employees cannot edit or delete this record. Only admin can edit/delete after agreement is created.');
+    if (!ok) return;
+    try {
+      await apiFetch(`/api/sites/${site.id}/agreement`, { method: 'POST' });
+      await reload();
+      if (selected?.id === site.id) setSelected(null);
+    } catch (err) {
+      alert(err.message);
     }
   }
 
@@ -585,8 +722,8 @@ function Records({ sites, reload, user }) {
         {isAdmin && <button className="primary-btn" onClick={exportExcel} disabled={exporting}>{exporting ? 'Exporting...' : 'Export Excel'}</button>}
       </div>
 
-      {!isAdmin && !hasEmployeeCrud && <div className="alert info">Employees can add and view submitted records only. CRUD is blocked by Admin.</div>}
-      {!isAdmin && hasEmployeeCrud && <div className="alert info">Admin has allowed CRUD for you. You can edit or delete records created by you. Excel export remains Admin-only.</div>}
+      {!isAdmin && !hasEmployeeCrud && <div className="alert info">Employees can add/view their own records. CRUD is enabled by default unless Admin blocks it or Agreement is created.</div>}
+      {!isAdmin && hasEmployeeCrud && <div className="alert info">You can edit/delete your own records until Agreement is created. Once Agreement is created, only Admin can edit/delete.</div>}
 
       <div className="records-grid">
         {filtered.map((site) => (
@@ -601,11 +738,15 @@ function Records({ sites, reload, user }) {
               <em>{site.rental_type}</em>
               <em>{site.light_type}</em>
               <em>{site.side_type}</em>
+              <em className={site.agreement_created ? 'agreement-tag created' : 'agreement-tag pending'}>{site.agreement_status || (site.agreement_created ? 'Agreement Created' : 'Agreement Not Created')}</em>
             </div>
             <div className="record-footer">
-              <small>End: {site.agreement_end_date}</small>
+              <small>Uploaded: {formatDateTime(site.created_at)} · End: {site.agreement_end_date}</small>
               <div className="record-actions">
                 <button className="ghost-btn" onClick={() => setSelected(site)}>View</button>
+                <button className="ghost-btn" onClick={() => downloadSiteExport(site, 'pdf')}>PDF</button>
+                <button className="ghost-btn" onClick={() => downloadSiteExport(site, 'docx')}>DOCX</button>
+                {canCreateAgreement(site) && <button className="secondary-btn" onClick={() => createAgreement(site)}>Agreement</button>}
                 {canCrudFor(site) && <button className="secondary-btn" onClick={() => setEditing(site)}>Edit</button>}
                 {canCrudFor(site) && <button className="danger-btn" onClick={() => deleteRecord(site)} disabled={deletingId === site.id}>{deletingId === site.id ? 'Deleting...' : 'Delete'}</button>}
               </div>
@@ -659,8 +800,9 @@ function SiteModal({ site, onClose }) {
           <Detail label="Landlord Phone" value={site.landlord_phone} />
           <Detail label="Landlord Email" value={site.landlord_email || '-'} />
           <Detail label="Secondary Contact" value={`${site.secondary_contact_name || '-'} ${site.secondary_contact_phone || ''}`} />
-          <Detail label="Size" value={`${site.height_ft} ft × ${site.width_ft} ft = ${site.area_sqft} sqft`} />
+          <Detail label="Size" value={(site.size_boxes || []).length ? (site.size_boxes || []).map((box) => `${box.label || 'Size'}: ${box.width_ft} ft W × ${box.height_ft} ft H = ${box.area_sqft} sqft`).join(' | ') : `${site.width_ft} ft W × ${site.height_ft} ft H = ${site.area_sqft} sqft`} />
           <Detail label="Rental" value={site.rental_type} />
+          <Detail label="Rent" value={formatCurrency(site.rent_amount)} />
           <Detail label="Advance" value={formatCurrency(site.advance_amount)} />
           <Detail label="Light" value={site.light_type} />
           <Detail label="Side" value={site.side_type} />
@@ -668,6 +810,10 @@ function SiteModal({ site, onClose }) {
           {site.side_type === 'Double' && <Detail label="Towards 2" value={site.towards_2 || '-'} />}
           <Detail label="GPS" value={mapsUrl ? <a href={mapsUrl} target="_blank" rel="noreferrer">Open in Google Maps</a> : '-'} />
           <Detail label="Agreement" value={`${site.agreement_tenure}: ${site.agreement_start_date} to ${site.agreement_end_date}`} />
+          <Detail label="Agreement Status" value={site.agreement_status || (site.agreement_created ? 'Agreement Created' : 'Agreement Not Created')} />
+          <Detail label="Agreement Created At" value={site.agreement_created_at ? formatDateTime(site.agreement_created_at) : '-'} />
+          <Detail label="Uploaded On" value={formatDateTime(site.created_at)} />
+          <Detail label="Last Updated" value={formatDateTime(site.updated_at)} />
           <Detail label="Entered By" value={site.created_by_name || '-'} />
         </div>
         <RemarksView remarks={site.remarks || {}} />
@@ -706,7 +852,7 @@ function Detail({ label, value }) {
 }
 
 function Users({ users, reloadUsers, currentUser }) {
-  const emptyUserForm = { name: '', email: '', phone: '', password: '', role: 'employee', can_crud: false, is_active: true };
+  const emptyUserForm = { name: '', email: '', phone: '', password: '', role: 'employee', can_crud: true, is_active: true };
   const [form, setForm] = useState(emptyUserForm);
   const [editingUser, setEditingUser] = useState(null);
   const [deleteLoadingId, setDeleteLoadingId] = useState(null);
@@ -717,7 +863,7 @@ function Users({ users, reloadUsers, currentUser }) {
     setForm((prev) => {
       const next = { ...prev, [key]: value };
       if (key === 'role' && value === 'admin') next.can_crud = true;
-      if (key === 'role' && value === 'employee' && editingUser?.role === 'admin') next.can_crud = false;
+      if (key === 'role' && value === 'employee' && editingUser?.role === 'admin') next.can_crud = true;
       return next;
     });
   }

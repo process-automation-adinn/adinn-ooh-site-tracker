@@ -11,12 +11,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook
+from docx import Document
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 import io
+from sqlalchemy import inspect, text as sql_text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .auth import create_token, get_current_user, hash_password, require_admin, verify_password
-from .database import get_db, init_database, ping_database
+from .database import engine, get_db, init_database, ping_database
 from .models import OOHSite, User
 from .schemas import CrudPermissionUpdate, LoginRequest, SiteOut, TokenResponse, UserCreate, UserOut, UserUpdate
 
@@ -24,7 +30,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR") or (BASE_DIR / "app" / "uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="ADINN OOH Site Tracker API", version="3.0.0-neon-postgres")
+app = FastAPI(title="ADINN OOH Site Tracker API", version="3.1.0-neon-postgres-agreement")
 
 
 def get_allowed_origins() -> list[str]:
@@ -71,8 +77,80 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def ensure_schema_compatibility():
+    """Add new columns without deleting or rewriting existing data."""
+    inspector = inspect(engine)
+    if "ooh_sites" not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns("ooh_sites")}
+    dialect = engine.dialect.name
+
+    if dialect == "postgresql":
+        definitions = {
+            "size_boxes": "JSON DEFAULT '[]' NOT NULL",
+            "rent_amount": "DOUBLE PRECISION DEFAULT 0 NOT NULL",
+            "agreement_created": "BOOLEAN DEFAULT false NOT NULL",
+            "agreement_created_at": "TIMESTAMP NULL",
+        }
+    else:
+        definitions = {
+            "size_boxes": "JSON DEFAULT '[]' NOT NULL",
+            "rent_amount": "FLOAT DEFAULT 0 NOT NULL",
+            "agreement_created": "BOOLEAN DEFAULT 0 NOT NULL",
+            "agreement_created_at": "DATETIME NULL",
+        }
+
+    with engine.begin() as conn:
+        for column_name, ddl in definitions.items():
+            if column_name not in existing:
+                conn.execute(sql_text(f"ALTER TABLE ooh_sites ADD COLUMN {column_name} {ddl}"))
+
+
+def normalize_size_boxes(size_boxes_json: str | list | None, width_ft: float, height_ft: float, side_type: str) -> list[dict]:
+    raw = None
+    if isinstance(size_boxes_json, list):
+        raw = size_boxes_json
+    elif size_boxes_json:
+        try:
+            raw = json.loads(size_boxes_json)
+        except json.JSONDecodeError:
+            raw = None
+
+    if not isinstance(raw, list) or not raw:
+        raw = [{"label": "Single Side" if side_type == "Single" else "Side 1", "width_ft": width_ft, "height_ft": height_ft}]
+
+    normalized = []
+    for index, box in enumerate(raw, start=1):
+        if not isinstance(box, dict):
+            continue
+        width = float(box.get("width_ft") or 0)
+        height = float(box.get("height_ft") or 0)
+        if width <= 0 or height <= 0:
+            raise HTTPException(status_code=400, detail="Every size box must have width and height greater than zero")
+        label = str(box.get("label") or f"Size {index}").strip()
+        normalized.append({
+            "label": label,
+            "width_ft": width,
+            "height_ft": height,
+            "area_sqft": round(width * height, 2),
+        })
+    if not normalized:
+        raise HTTPException(status_code=400, detail="At least one valid size box is required")
+    return normalized
+
+
+def get_site_for_user_or_404(site_id: int, db: Session, current_user: User) -> OOHSite:
+    site = db.query(OOHSite).filter(OOHSite.id == int(site_id)).first()
+    if not site:
+        raise HTTPException(status_code=404, detail="Site not found")
+    if current_user.role != "admin" and int(site.created_by_user_id) != int(current_user.id):
+        raise HTTPException(status_code=403, detail="Not allowed")
+    return site
+
+
 def init_db():
     init_database()
+    ensure_schema_compatibility()
     db = next(get_db())
     try:
         admin_email = os.getenv("SEED_ADMIN_EMAIL", "admin@adinn.com").strip().lower()
@@ -110,12 +188,25 @@ def init_db():
                         password_hash=hash_password(employee_password),
                         role="employee",
                         is_active=True,
-                        can_crud=False,
+                        can_crud=True,
                         created_at=now_utc(),
                         updated_at=now_utc(),
                     )
                 )
                 db.commit()
+
+        # Requirement update: employees get CRUD access by default.
+        db.query(User).filter(User.role == "employee", User.can_crud == False).update(  # noqa: E712
+            {"can_crud": True, "updated_at": now_utc()}, synchronize_session=False
+        )
+
+        # Backfill new size-box structure for old records without deleting data.
+        for legacy_site in db.query(OOHSite).all():
+            if not legacy_site.size_boxes:
+                legacy_site.size_boxes = normalize_size_boxes(None, legacy_site.width_ft, legacy_site.height_ft, legacy_site.side_type)
+            if legacy_site.rent_amount is None:
+                legacy_site.rent_amount = 0
+        db.commit()
     finally:
         db.close()
 
@@ -275,7 +366,9 @@ def site_to_out(site: OOHSite, db: Session) -> SiteOut:
         height_ft=float(site.height_ft),
         width_ft=float(site.width_ft),
         area_sqft=float(site.area_sqft),
+        size_boxes=site.size_boxes or normalize_size_boxes(None, site.width_ft, site.height_ft, site.side_type),
         rental_type=site.rental_type,
+        rent_amount=float(site.rent_amount or 0),
         advance_amount=float(site.advance_amount or 0),
         light_type=site.light_type,
         side_type=site.side_type,
@@ -286,6 +379,9 @@ def site_to_out(site: OOHSite, db: Session) -> SiteOut:
         agreement_tenure=site.agreement_tenure,
         agreement_start_date=site.agreement_start_date,
         agreement_end_date=site.agreement_end_date,
+        agreement_created=bool(site.agreement_created),
+        agreement_created_at=site.agreement_created_at,
+        agreement_status="Agreement Created" if site.agreement_created else "Agreement Not Created",
         remarks=parse_remarks_json(site.remarks),
         documents=make_document_data(site),
         created_at=site.created_at or now_utc(),
@@ -296,6 +392,8 @@ def site_to_out(site: OOHSite, db: Session) -> SiteOut:
 def can_manage_site(current_user: User, site: OOHSite) -> bool:
     if current_user.role == "admin":
         return True
+    if site.agreement_created:
+        return False
     return bool(current_user.can_crud) and int(site.created_by_user_id) == int(current_user.id)
 
 
@@ -303,7 +401,7 @@ def require_site_crud_permission(current_user: User, site: OOHSite):
     if not can_manage_site(current_user, site):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="CRUD permission is blocked for this employee or this record.",
+            detail="CRUD is blocked for this employee, this record belongs to another user, or agreement is already created.",
         )
 
 
@@ -341,7 +439,9 @@ def apply_site_fields(
     secondary_contact_phone: str | None,
     height_ft: float,
     width_ft: float,
+    size_boxes_json: str | None,
     rental_type: str,
+    rent_amount: float,
     advance_amount: float,
     light_type: str,
     side_type: str,
@@ -361,10 +461,14 @@ def apply_site_fields(
     site.landlord_email = landlord_email.strip() if landlord_email else None
     site.secondary_contact_name = secondary_contact_name.strip() if secondary_contact_name else None
     site.secondary_contact_phone = secondary_contact_phone.strip() if secondary_contact_phone else None
-    site.height_ft = float(height_ft)
-    site.width_ft = float(width_ft)
-    site.area_sqft = round(float(height_ft) * float(width_ft), 2)
+    normalized_boxes = normalize_size_boxes(size_boxes_json, width_ft, height_ft, side_type)
+    site.size_boxes = normalized_boxes
+    first_box = normalized_boxes[0]
+    site.width_ft = float(first_box["width_ft"])
+    site.height_ft = float(first_box["height_ft"])
+    site.area_sqft = round(sum(float(box["area_sqft"]) for box in normalized_boxes), 2)
     site.rental_type = rental_type
+    site.rent_amount = float(rent_amount or 0)
     site.advance_amount = float(advance_amount or 0)
     site.light_type = light_type
     site.side_type = side_type
@@ -524,7 +628,9 @@ def create_site(
     secondary_contact_phone: Optional[str] = Form(None),
     height_ft: float = Form(...),
     width_ft: float = Form(...),
+    size_boxes_json: Optional[str] = Form(None),
     rental_type: str = Form(...),
+    rent_amount: float = Form(0),
     advance_amount: float = Form(0),
     light_type: str = Form(...),
     side_type: str = Form(...),
@@ -536,6 +642,7 @@ def create_site(
     agreement_start_date: date = Form(...),
     agreement_end_date: date = Form(...),
     remarks_json: Optional[str] = Form(None),
+    create_agreement: bool = Form(False),
     site_photo_file: UploadFile | None = File(None),
     landlord_photo_file: UploadFile | None = File(None),
     aadhaar_file: UploadFile | None = File(None),
@@ -558,7 +665,9 @@ def create_site(
         secondary_contact_phone,
         height_ft,
         width_ft,
+        size_boxes_json,
         rental_type,
+        rent_amount,
         advance_amount,
         light_type,
         side_type,
@@ -571,6 +680,9 @@ def create_site(
         agreement_end_date,
         remarks_json,
     )
+    if create_agreement:
+        site.agreement_created = True
+        site.agreement_created_at = now_utc()
     site.created_at = now_utc()
     db.add(site)
     db.flush()
@@ -592,7 +704,9 @@ def update_site(
     secondary_contact_phone: Optional[str] = Form(None),
     height_ft: float = Form(...),
     width_ft: float = Form(...),
+    size_boxes_json: Optional[str] = Form(None),
     rental_type: str = Form(...),
+    rent_amount: float = Form(0),
     advance_amount: float = Form(0),
     light_type: str = Form(...),
     side_type: str = Form(...),
@@ -629,7 +743,9 @@ def update_site(
         secondary_contact_phone,
         height_ft,
         width_ft,
+        size_boxes_json,
         rental_type,
+        rent_amount,
         advance_amount,
         light_type,
         side_type,
@@ -669,6 +785,107 @@ def list_sites(db: Session = Depends(get_db), current_user: User = Depends(get_c
     return [site_to_out(site, db) for site in sites]
 
 
+@app.post("/api/sites/{site_id}/agreement", response_model=SiteOut)
+def create_site_agreement(site_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    site = get_site_for_user_or_404(site_id, db, current_user)
+    if site.agreement_created:
+        raise HTTPException(status_code=400, detail="Agreement already created for this OOH site")
+    if current_user.role != "admin" and int(site.created_by_user_id) != int(current_user.id):
+        raise HTTPException(status_code=403, detail="Only the owner or admin can create agreement")
+    site.agreement_created = True
+    site.agreement_created_at = now_utc()
+    site.updated_at = now_utc()
+    db.commit()
+    db.refresh(site)
+    return site_to_out(site, db)
+
+
+def site_export_rows(site: OOHSite, db: Session) -> list[tuple[str, str]]:
+    creator = db.query(User).filter(User.id == site.created_by_user_id).first()
+    size_summary = "; ".join(
+        f"{box.get('label') or 'Size'}: {box.get('width_ft')} ft W × {box.get('height_ft')} ft H = {box.get('area_sqft')} sqft"
+        for box in (site.size_boxes or normalize_size_boxes(None, site.width_ft, site.height_ft, site.side_type))
+    )
+    return [
+        ("OOH ID", str(site.id)),
+        ("Agreement Status", "Agreement Created" if site.agreement_created else "Agreement Not Created"),
+        ("Uploaded On", (site.created_at or now_utc()).strftime("%Y-%m-%d %H:%M")),
+        ("Last Updated", (site.updated_at or now_utc()).strftime("%Y-%m-%d %H:%M")),
+        ("Entered By", creator.name if creator else ""),
+        ("Hoarding Location", site.hoarding_location or ""),
+        ("Landlord Location", site.landlord_location or ""),
+        ("Landlord Name", site.landlord_name or ""),
+        ("Landlord Phone", site.landlord_phone or ""),
+        ("Landlord Email", site.landlord_email or ""),
+        ("Secondary Contact", f"{site.secondary_contact_name or ''} {site.secondary_contact_phone or ''}".strip()),
+        ("Size Details", size_summary),
+        ("Total Area", f"{site.area_sqft} sqft"),
+        ("Rental Type", site.rental_type or ""),
+        ("Rent", f"Rs {site.rent_amount or 0:,.0f}"),
+        ("Advance", f"Rs {site.advance_amount or 0:,.0f}"),
+        ("Light", site.light_type or ""),
+        ("Side", site.side_type or ""),
+        ("Towards 1", site.towards_1 or ""),
+        ("Towards 2", site.towards_2 or ""),
+        ("GPS", f"{site.latitude or ''}, {site.longitude or ''}".strip(', ')),
+        ("Agreement Tenure", site.agreement_tenure or ""),
+        ("Agreement Dates", f"{site.agreement_start_date} to {site.agreement_end_date}"),
+        ("Remarks", format_remarks_for_excel(site.remarks)),
+    ]
+
+
+@app.get("/api/sites/{site_id}/export/docx")
+def export_site_docx(site_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    site = get_site_for_user_or_404(site_id, db, current_user)
+    document = Document()
+    document.add_heading(f"ADINN OOH Site Details #{site.id}", level=1)
+    document.add_paragraph("Generated from ADINN OOH Site Tracker")
+    table = document.add_table(rows=1, cols=2)
+    table.style = "Table Grid"
+    table.rows[0].cells[0].text = "Field"
+    table.rows[0].cells[1].text = "Details"
+    for label, value in site_export_rows(site, db):
+        row = table.add_row().cells
+        row[0].text = label
+        row[1].text = value
+    output = io.BytesIO()
+    document.save(output)
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename=ooh_site_{site.id}.docx"},
+    )
+
+
+@app.get("/api/sites/{site_id}/export/pdf")
+def export_site_pdf(site_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    site = get_site_for_user_or_404(site_id, db, current_user)
+    output = io.BytesIO()
+    doc = SimpleDocTemplate(output, pagesize=A4, rightMargin=28, leftMargin=28, topMargin=30, bottomMargin=30)
+    styles = getSampleStyleSheet()
+    elements = [Paragraph(f"ADINN OOH Site Details #{site.id}", styles["Title"]), Spacer(1, 10)]
+    data = [[Paragraph("<b>Field</b>", styles["Normal"]), Paragraph("<b>Details</b>", styles["Normal"])] ]
+    for label, value in site_export_rows(site, db):
+        data.append([Paragraph(str(label), styles["Normal"]), Paragraph(str(value).replace("\n", "<br/>") or "-", styles["Normal"])])
+    table = Table(data, colWidths=[135, 365])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#101828")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D0D5DD")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BACKGROUND", (0, 1), (0, -1), colors.HexColor("#FFF1EE")),
+    ]))
+    elements.append(table)
+    doc.build(elements)
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=ooh_site_{site.id}.pdf"},
+    )
+
+
 @app.get("/api/sites/export/excel")
 def export_sites_excel(db: Session = Depends(get_db), _: User = Depends(require_admin)):
     sites = db.query(OOHSite).order_by(OOHSite.created_at.desc()).all()
@@ -678,9 +895,9 @@ def export_sites_excel(db: Session = Depends(get_db), _: User = Depends(require_
     headers = [
         "ID", "Entered By", "Hoarding Location", "Landlord Location", "Landlord Name",
         "Landlord Phone", "Landlord Email", "Secondary Name", "Secondary Phone",
-        "Height ft", "Width ft", "Area sqft", "Rental Type", "Advance Rs",
+        "Width ft", "Height ft", "Area sqft", "Size Boxes", "Rental Type", "Rent Rs", "Advance Rs",
         "Light", "Side", "Towards 1", "Towards 2", "Latitude", "Longitude",
-        "Agreement Tenure", "Start Date", "End Date", "Site Photo", "Landlord Photo", "Aadhaar", "PAN", "Property Tax",
+        "Agreement Tenure", "Start Date", "End Date", "Agreement Status", "Agreement Created At", "Site Photo", "Landlord Photo", "Aadhaar", "PAN", "Property Tax",
         "Passbook", "Remarks", "Created At"
     ]
     ws.append(headers)
@@ -696,10 +913,12 @@ def export_sites_excel(db: Session = Depends(get_db), _: User = Depends(require_
             site.landlord_email or "",
             site.secondary_contact_name or "",
             site.secondary_contact_phone or "",
-            site.height_ft,
             site.width_ft,
+            site.height_ft,
             site.area_sqft,
+            "; ".join(f"{box.get('label')}: {box.get('width_ft')}W x {box.get('height_ft')}H = {box.get('area_sqft')} sqft" for box in (site.size_boxes or [])),
             site.rental_type,
+            site.rent_amount or 0,
             site.advance_amount,
             site.light_type,
             site.side_type,
@@ -710,6 +929,8 @@ def export_sites_excel(db: Session = Depends(get_db), _: User = Depends(require_
             site.agreement_tenure,
             site.agreement_start_date.isoformat() if site.agreement_start_date else "",
             site.agreement_end_date.isoformat() if site.agreement_end_date else "",
+            "Agreement Created" if site.agreement_created else "Agreement Not Created",
+            site.agreement_created_at.strftime("%Y-%m-%d %H:%M") if site.agreement_created_at else "",
             "Uploaded" if site.site_photo_file else "Not Uploaded",
             "Uploaded" if site.landlord_photo_file else "Not Uploaded",
             "Uploaded" if site.aadhaar_file else "Not Uploaded",
@@ -734,9 +955,5 @@ def export_sites_excel(db: Session = Depends(get_db), _: User = Depends(require_
 
 @app.get("/api/sites/{site_id}", response_model=SiteOut)
 def get_site(site_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    site = db.query(OOHSite).filter(OOHSite.id == int(site_id)).first()
-    if not site:
-        raise HTTPException(status_code=404, detail="Site not found")
-    if current_user.role != "admin" and int(site.created_by_user_id) != int(current_user.id):
-        raise HTTPException(status_code=403, detail="Not allowed")
+    site = get_site_for_user_or_404(site_id, db, current_user)
     return site_to_out(site, db)
