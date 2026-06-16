@@ -58,16 +58,11 @@ function defaultSizeBoxes(sideType = 'Single') {
 
 function normalizeSizeBoxesForForm(site) {
   if (Array.isArray(site?.size_boxes) && site.size_boxes.length) {
-    if (site?.side_type === 'Double') {
-      const first = site.size_boxes[0] || {};
-      const second = site.size_boxes[1] || {};
-      return [
-        { label: 'Side 1', width_ft: first.width_ft ?? '', height_ft: first.height_ft ?? '' },
-        { label: 'Side 2', width_ft: second.width_ft ?? '', height_ft: second.height_ft ?? '' },
-      ];
-    }
-    const first = site.size_boxes[0] || {};
-    return [{ label: 'Side 1', width_ft: first.width_ft ?? '', height_ft: first.height_ft ?? '' }];
+    return site.size_boxes.map((box, index) => ({
+      label: box.label || `Size ${index + 1}`,
+      width_ft: box.width_ft ?? '',
+      height_ft: box.height_ft ?? '',
+    }));
   }
   return [{ label: 'Side 1', width_ft: site?.width_ft ?? '', height_ft: site?.height_ft ?? '' }];
 }
@@ -763,11 +758,38 @@ function Records({ sites, reload, user }) {
 }
 
 function DocLink({ label, uploaded, url }) {
-  const fullUrl = url ? `${getApiBase()}${url}` : '';
+  const [opening, setOpening] = useState(false);
+
+  async function openProtectedFile() {
+    if (!url) return;
+    setOpening(true);
+    try {
+      const token = getToken();
+      const response = await fetch(`${getApiBase()}${url}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!response.ok) {
+        throw new Error('Unable to open file');
+      }
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      window.open(objectUrl, '_blank', 'noopener,noreferrer');
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+    } catch (error) {
+      alert(error.message || 'Unable to open file');
+    } finally {
+      setOpening(false);
+    }
+  }
+
   return (
     <div className="doc-row">
       <span>{label}</span>
-      {uploaded && url ? <a href={fullUrl} target="_blank" rel="noreferrer">Open file</a> : <em>Not uploaded</em>}
+      {uploaded && url ? (
+        <button type="button" className="link-btn" onClick={openProtectedFile} disabled={opening}>
+          {opening ? 'Opening...' : 'Open file'}
+        </button>
+      ) : <em>Not uploaded</em>}
     </div>
   );
 }

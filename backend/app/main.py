@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook
 from docx import Document
@@ -23,12 +23,21 @@ from sqlalchemy.orm import Session
 
 from .auth import create_token, get_current_user, hash_password, require_admin, verify_password
 from .database import engine, get_db, init_database, ping_database
-from .models import OOHSite, User
+from .models import OOHSite, StoredFile, User
 from .schemas import CrudPermissionUpdate, LoginRequest, SiteOut, TokenResponse, UserCreate, UserOut, UserUpdate
+import re
+from urllib.parse import quote
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR") or (BASE_DIR / "app" / "uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def safe_content_disposition(filename: str) -> str:
+    original = filename or "file"
+    fallback = re.sub(r'[^A-Za-z0-9._-]+', "_", original).strip("._") or "file"
+    encoded = quote(original, safe="")
+    return f"inline; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
 
 app = FastAPI(title="ADINN OOH Site Tracker API", version="3.1.0-neon-postgres-agreement")
 
@@ -53,7 +62,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Static uploads are kept only as a fallback for older local files.
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+FILE_FIELD_LABELS = {
+    "site_photo_file": "Site Photo",
+    "landlord_photo_file": "Landlord Photo",
+    "aadhaar_file": "Aadhaar",
+    "pan_file": "PAN",
+    "property_tax_file": "Property Tax",
+    "passbook_file": "Passbook",
+}
 
 ALLOWED_FILE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
 
@@ -274,24 +293,50 @@ def validate_file(file: UploadFile | None):
         )
 
 
-def save_upload(site_id: int, upload: UploadFile | None, label: str) -> str | None:
+def save_upload_to_neon(site_id: int, upload: UploadFile | None, field_name: str, db: Session) -> str | None:
+    """Store uploaded file bytes directly in Neon PostgreSQL.
+
+    The OOH table keeps a lightweight filename marker, while the actual file
+    bytes live in the stored_files table. Existing local file paths are not
+    deleted; they are used as a fallback only when no DB file exists.
+    """
     if upload is None:
         return None
     validate_file(upload)
     ext = Path(upload.filename or "").suffix.lower()
-    site_dir = UPLOAD_DIR / f"site_{site_id}"
-    site_dir.mkdir(parents=True, exist_ok=True)
-    safe_name = f"{label}_{uuid4().hex}{ext}"
-    path = site_dir / safe_name
-    with path.open("wb") as buffer:
-        buffer.write(upload.file.read())
-    return f"site_{site_id}/{safe_name}"
+    safe_name = f"{field_name}_{uuid4().hex}{ext}"
+    content = upload.file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail=f"{upload.filename or field_name} is empty")
+
+    existing = db.query(StoredFile).filter(
+        StoredFile.site_id == int(site_id),
+        StoredFile.field_name == field_name,
+    ).first()
+    if existing:
+        existing.original_filename = upload.filename or safe_name
+        existing.content_type = upload.content_type or "application/octet-stream"
+        existing.file_size = len(content)
+        existing.data = content
+        existing.updated_at = now_utc()
+    else:
+        db.add(StoredFile(
+            site_id=int(site_id),
+            field_name=field_name,
+            original_filename=upload.filename or safe_name,
+            content_type=upload.content_type or "application/octet-stream",
+            file_size=len(content),
+            data=content,
+            created_at=now_utc(),
+            updated_at=now_utc(),
+        ))
+    return safe_name
 
 
-def file_url(path: str | None) -> str | None:
-    if not path:
+def file_url(site_id: int | None, field_name: str, marker: str | None) -> str | None:
+    if not marker or not site_id:
         return None
-    return f"/uploads/{path}"
+    return f"/api/sites/{site_id}/files/{field_name}"
 
 
 def validate_site_payload(
@@ -341,12 +386,12 @@ def make_document_data(site: OOHSite | None) -> dict:
         "pan_uploaded": bool(site and site.pan_file),
         "property_tax_uploaded": bool(site and site.property_tax_file),
         "passbook_uploaded": bool(site and site.passbook_file),
-        "site_photo_file_url": file_url(site.site_photo_file if site else None),
-        "landlord_photo_file_url": file_url(site.landlord_photo_file if site else None),
-        "aadhaar_file_url": file_url(site.aadhaar_file if site else None),
-        "pan_file_url": file_url(site.pan_file if site else None),
-        "property_tax_file_url": file_url(site.property_tax_file if site else None),
-        "passbook_file_url": file_url(site.passbook_file if site else None),
+        "site_photo_file_url": file_url(site.id if site else None, "site_photo_file", site.site_photo_file if site else None),
+        "landlord_photo_file_url": file_url(site.id if site else None, "landlord_photo_file", site.landlord_photo_file if site else None),
+        "aadhaar_file_url": file_url(site.id if site else None, "aadhaar_file", site.aadhaar_file if site else None),
+        "pan_file_url": file_url(site.id if site else None, "pan_file", site.pan_file if site else None),
+        "property_tax_file_url": file_url(site.id if site else None, "property_tax_file", site.property_tax_file if site else None),
+        "passbook_file_url": file_url(site.id if site else None, "passbook_file", site.passbook_file if site else None),
     }
 
 
@@ -407,6 +452,7 @@ def require_site_crud_permission(current_user: User, site: OOHSite):
 
 def apply_document_uploads(
     site: OOHSite,
+    db: Session,
     site_photo_file: UploadFile | None = None,
     landlord_photo_file: UploadFile | None = None,
     aadhaar_file: UploadFile | None = None,
@@ -415,16 +461,16 @@ def apply_document_uploads(
     passbook_file: UploadFile | None = None,
 ):
     uploaded_files = {
-        "site_photo_file": save_upload(site.id, site_photo_file, "site_photo"),
-        "landlord_photo_file": save_upload(site.id, landlord_photo_file, "landlord_photo"),
-        "aadhaar_file": save_upload(site.id, aadhaar_file, "aadhaar"),
-        "pan_file": save_upload(site.id, pan_file, "pan"),
-        "property_tax_file": save_upload(site.id, property_tax_file, "property_tax"),
-        "passbook_file": save_upload(site.id, passbook_file, "passbook"),
+        "site_photo_file": save_upload_to_neon(site.id, site_photo_file, "site_photo_file", db),
+        "landlord_photo_file": save_upload_to_neon(site.id, landlord_photo_file, "landlord_photo_file", db),
+        "aadhaar_file": save_upload_to_neon(site.id, aadhaar_file, "aadhaar_file", db),
+        "pan_file": save_upload_to_neon(site.id, pan_file, "pan_file", db),
+        "property_tax_file": save_upload_to_neon(site.id, property_tax_file, "property_tax_file", db),
+        "passbook_file": save_upload_to_neon(site.id, passbook_file, "passbook_file", db),
     }
-    for field_name, stored_path in uploaded_files.items():
-        if stored_path:
-            setattr(site, field_name, stored_path)
+    for field_name, stored_marker in uploaded_files.items():
+        if stored_marker:
+            setattr(site, field_name, stored_marker)
     site.updated_at = now_utc()
 
 
@@ -686,7 +732,7 @@ def create_site(
     site.created_at = now_utc()
     db.add(site)
     db.flush()
-    apply_document_uploads(site, site_photo_file, landlord_photo_file, aadhaar_file, pan_file, property_tax_file, passbook_file)
+    apply_document_uploads(site, db, site_photo_file, landlord_photo_file, aadhaar_file, pan_file, property_tax_file, passbook_file)
     db.commit()
     db.refresh(site)
     return site_to_out(site, db)
@@ -758,7 +804,7 @@ def update_site(
         agreement_end_date,
         remarks_json,
     )
-    apply_document_uploads(site, site_photo_file, landlord_photo_file, aadhaar_file, pan_file, property_tax_file, passbook_file)
+    apply_document_uploads(site, db, site_photo_file, landlord_photo_file, aadhaar_file, pan_file, property_tax_file, passbook_file)
     db.commit()
     db.refresh(site)
     return site_to_out(site, db)
@@ -770,6 +816,7 @@ def delete_site(site_id: int, db: Session = Depends(get_db), current_user: User 
     if not site:
         raise HTTPException(status_code=404, detail="Site not found")
     require_site_crud_permission(current_user, site)
+    db.query(StoredFile).filter(StoredFile.site_id == int(site_id)).delete(synchronize_session=False)
     db.delete(site)
     db.commit()
     shutil.rmtree(UPLOAD_DIR / f"site_{site_id}", ignore_errors=True)
@@ -783,6 +830,38 @@ def list_sites(db: Session = Depends(get_db), current_user: User = Depends(get_c
         query = query.filter(OOHSite.created_by_user_id == int(current_user.id))
     sites = query.order_by(OOHSite.created_at.desc()).all()
     return [site_to_out(site, db) for site in sites]
+
+@app.get("/api/sites/{site_id}/files/{field_name}")
+def get_site_file(
+    site_id: int,
+    field_name: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if field_name not in FILE_FIELD_LABELS:
+        raise HTTPException(status_code=404, detail="File field not found")
+    site = get_site_for_user_or_404(site_id, db, current_user)
+    marker = getattr(site, field_name, None)
+    if not marker:
+        raise HTTPException(status_code=404, detail="File not uploaded")
+
+    stored = db.query(StoredFile).filter(
+        StoredFile.site_id == int(site_id),
+        StoredFile.field_name == field_name,
+    ).first()
+    if stored and stored.data:
+        filename = stored.original_filename or f"{field_name}.bin"
+        return Response(
+            content=stored.data,
+            media_type=stored.content_type or "application/octet-stream",
+            headers={"Content-Disposition": safe_content_disposition(filename)},
+        )
+
+    # Fallback for old local uploads created before DB-backed file storage.
+    legacy_path = UPLOAD_DIR / str(marker)
+    if legacy_path.exists() and legacy_path.is_file():
+        return FileResponse(legacy_path)
+    raise HTTPException(status_code=404, detail="File is referenced, but the stored file was not found")
 
 
 @app.post("/api/sites/{site_id}/agreement", response_model=SiteOut)

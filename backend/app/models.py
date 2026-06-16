@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, JSON, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -21,6 +21,22 @@ class User(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     sites: Mapped[list["OOHSite"]] = relationship("OOHSite", back_populates="created_by")
+
+
+class StoredFile(Base):
+    __tablename__ = "stored_files"
+    __table_args__ = (UniqueConstraint("site_id", "field_name", name="uq_stored_files_site_field"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, autoincrement=True)
+    site_id: Mapped[int] = mapped_column(Integer, ForeignKey("ooh_sites.id"), index=True, nullable=False)
+    field_name: Mapped[str] = mapped_column(String(80), index=True, nullable=False)
+    original_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    file_size: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
 
 
 class OOHSite(Base):

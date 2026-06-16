@@ -496,6 +496,8 @@ button:disabled { opacity: 0.65; cursor: not-allowed; transform: none; }
 }
 .doc-row span { font-weight: 800; }
 .doc-row a { font-weight: 900; }
+.link-btn { background: transparent; border: 0; color: var(--primary); font-weight: 900; cursor: pointer; padding: 0; font: inherit; }
+.link-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .doc-row em { color: var(--muted); font-style: normal; }
 .user-form { align-items: end; }
 .user-list { display: grid; gap: 10px; margin-top: 16px; }
