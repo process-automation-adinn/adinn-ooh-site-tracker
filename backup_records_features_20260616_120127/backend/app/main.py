@@ -3,8 +3,6 @@ import os
 import json
 from pathlib import Path
 import shutil
-import re
-from urllib.parse import quote
 from typing import Optional
 from uuid import uuid4
 
@@ -27,10 +25,19 @@ from .auth import create_token, get_current_user, hash_password, require_admin, 
 from .database import engine, get_db, init_database, ping_database
 from .models import OOHSite, StoredFile, User
 from .schemas import CrudPermissionUpdate, LoginRequest, SiteOut, TokenResponse, UserCreate, UserOut, UserUpdate
+import re
+from urllib.parse import quote
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR") or (BASE_DIR / "app" / "uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def safe_content_disposition(filename: str) -> str:
+    original = filename or "file"
+    fallback = re.sub(r'[^A-Za-z0-9._-]+', "_", original).strip("._") or "file"
+    encoded = quote(original, safe="")
+    return f"inline; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
 
 app = FastAPI(title="ADINN OOH Site Tracker API", version="3.1.0-neon-postgres-agreement")
 
@@ -76,13 +83,6 @@ SECTION_REMARK_LABELS = {
     "documents": "Photos & Documents",
     "gps_agreement": "GPS & Agreement",
 }
-
-
-def safe_content_disposition(filename: str, disposition: str = "inline") -> str:
-    original = filename or "file"
-    fallback = re.sub(r'[^A-Za-z0-9._-]+', "_", original).strip("._") or "file"
-    encoded = quote(original, safe="")
-    return f"{disposition}; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
 
 
 def now_utc() -> datetime:
@@ -726,10 +726,9 @@ def create_site(
         agreement_end_date,
         remarks_json,
     )
-    # Agreement creation is intentionally allowed only from the Records section
-    # through POST /api/sites/{site_id}/agreement, never during initial site creation.
-    site.agreement_created = False
-    site.agreement_created_at = None
+    if create_agreement:
+        site.agreement_created = True
+        site.agreement_created_at = now_utc()
     site.created_at = now_utc()
     db.add(site)
     db.flush()
@@ -966,7 +965,9 @@ def export_site_pdf(site_id: int, db: Session = Depends(get_db), current_user: U
     )
 
 
-def build_sites_excel_response(sites: list[OOHSite], db: Session, filename: str = "adinn_ooh_sites.xlsx"):
+@app.get("/api/sites/export/excel")
+def export_sites_excel(db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    sites = db.query(OOHSite).order_by(OOHSite.created_at.desc()).all()
     wb = Workbook()
     ws = wb.active
     ws.title = "OOH Sites"
@@ -1027,30 +1028,9 @@ def build_sites_excel_response(sites: list[OOHSite], db: Session, filename: str 
     return StreamingResponse(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": safe_content_disposition(filename, "attachment")},
+        headers={"Content-Disposition": "attachment; filename=adinn_ooh_sites.xlsx"},
     )
 
-
-@app.get("/api/sites/export/excel")
-def export_sites_excel(db: Session = Depends(get_db), _: User = Depends(require_admin)):
-    sites = db.query(OOHSite).order_by(OOHSite.created_at.desc()).all()
-    return build_sites_excel_response(sites, db, "adinn_ooh_sites.xlsx")
-
-
-@app.post("/api/sites/export/excel/selected")
-def export_selected_sites_excel(payload: dict, db: Session = Depends(get_db), _: User = Depends(require_admin)):
-    raw_ids = payload.get("site_ids") or []
-    if not isinstance(raw_ids, list) or not raw_ids:
-        raise HTTPException(status_code=400, detail="Select at least one hoarding to export")
-    try:
-        ids = [int(value) for value in raw_ids]
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="Invalid selected hoarding IDs")
-    unique_ids = list(dict.fromkeys(ids))
-    sites = db.query(OOHSite).filter(OOHSite.id.in_(unique_ids)).order_by(OOHSite.created_at.desc()).all()
-    if not sites:
-        raise HTTPException(status_code=404, detail="No selected hoardings found")
-    return build_sites_excel_response(sites, db, "adinn_ooh_selected_sites.xlsx")
 
 @app.get("/api/sites/{site_id}", response_model=SiteOut)
 def get_site(site_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

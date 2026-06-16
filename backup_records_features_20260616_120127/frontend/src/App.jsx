@@ -472,6 +472,12 @@ function SiteForm({ onCreated, initialSite = null, mode = 'create', onSaved, onC
     await saveSite(false);
   }
 
+  async function confirmAndCreateAgreement() {
+    const ok = window.confirm('Create agreement for this OOH site? Warning: once confirmed, employees cannot edit or delete this record. Only admin can edit/delete after agreement is created.');
+    if (!ok) return;
+    await saveSite(true);
+  }
+
   return (
     <form className="site-form page-stack" onSubmit={submit}>
       {message && <div className="alert success">{message}</div>}
@@ -603,6 +609,7 @@ function SiteForm({ onCreated, initialSite = null, mode = 'create', onSaved, onC
         </div>
         <div className="submit-actions">
           {isEdit && <button className="ghost-btn" type="button" onClick={onCancel}>Cancel</button>}
+          {!isEdit && <button className="secondary-btn" type="button" onClick={confirmAndCreateAgreement} disabled={loading}>{loading ? 'Saving...' : 'Create Agreement'}</button>}
           <button className="primary-btn" type="submit" disabled={loading}>{loading ? (isEdit ? 'Updating...' : 'Saving...') : (isEdit ? 'Update OOH Site' : 'Submit OOH Site')}</button>
         </div>
       </div>
@@ -610,10 +617,8 @@ function SiteForm({ onCreated, initialSite = null, mode = 'create', onSaved, onC
   );
 }
 
-function Records({ sites, reload, user, users = [] }) {
+function Records({ sites, reload, user }) {
   const [query, setQuery] = useState('');
-  const [selectedEmployeeId, setSelectedEmployeeId] = useState('all');
-  const [selectedExportIds, setSelectedExportIds] = useState([]);
   const [selected, setSelected] = useState(null);
   const [editing, setEditing] = useState(null);
   const [exporting, setExporting] = useState(false);
@@ -623,72 +628,28 @@ function Records({ sites, reload, user, users = [] }) {
   const canCrudFor = (site) => isAdmin || (hasEmployeeCrud && site.created_by_user_id === user?.id && !site.agreement_created);
   const canCreateAgreement = (site) => !site.agreement_created && (isAdmin || site.created_by_user_id === user?.id);
 
-  const employeeFilters = useMemo(() => {
-    const map = new Map();
-    users.forEach((item) => {
-      if (item?.id && item?.name) map.set(Number(item.id), item.name);
-    });
-    sites.forEach((site) => {
-      if (site?.created_by_user_id) {
-        map.set(Number(site.created_by_user_id), site.created_by_name || map.get(Number(site.created_by_user_id)) || `User #${site.created_by_user_id}`);
-      }
-    });
-    return Array.from(map.entries())
-      .map(([id, name]) => ({ id, name }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [users, sites]);
-
   const filtered = useMemo(() => {
     const q = query.toLowerCase();
-    return sites.filter((site) => {
-      const matchesEmployee = selectedEmployeeId === 'all' || Number(site.created_by_user_id) === Number(selectedEmployeeId);
-      const matchesSearch = [
-        site.hoarding_location,
-        site.landlord_location,
-        site.landlord_name,
-        site.landlord_phone,
-        site.rental_type,
-        site.light_type,
-        site.side_type,
-        site.created_by_name,
-      ].join(' ').toLowerCase().includes(q);
-      return matchesEmployee && matchesSearch;
-    });
-  }, [sites, query, selectedEmployeeId]);
+    return sites.filter((site) => [
+      site.hoarding_location,
+      site.landlord_location,
+      site.landlord_name,
+      site.landlord_phone,
+      site.rental_type,
+      site.light_type,
+      site.side_type,
+    ].join(' ').toLowerCase().includes(q));
+  }, [sites, query]);
 
-  const filteredIds = useMemo(() => filtered.map((site) => Number(site.id)), [filtered]);
-  const allFilteredSelected = filteredIds.length > 0 && filteredIds.every((id) => selectedExportIds.includes(id));
-
-  function toggleExportSelection(siteId) {
-    const id = Number(siteId);
-    setSelectedExportIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
-  }
-
-  function selectAllFiltered() {
-    setSelectedExportIds((prev) => Array.from(new Set([...prev, ...filteredIds])));
-  }
-
-  function clearSelectedExports() {
-    setSelectedExportIds([]);
-  }
-
-  async function exportSelectedExcel() {
-    if (!selectedExportIds.length) {
-      alert('Select at least one hoarding to export.');
-      return;
-    }
+  async function exportExcel() {
     setExporting(true);
     try {
-      const response = await apiFetch('/api/sites/export/excel/selected', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ site_ids: selectedExportIds }),
-      });
+      const response = await apiFetch('/api/sites/export/excel');
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'adinn_ooh_selected_sites.xlsx';
+      a.download = 'adinn_ooh_sites.xlsx';
       a.click();
       window.URL.revokeObjectURL(url);
     } catch (err) {
@@ -750,55 +711,23 @@ function Records({ sites, reload, user, users = [] }) {
 
   return (
     <section className="page-stack">
-      <div className="toolbar records-toolbar">
-        <input className="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by site, landlord, rental, light, employee..." />
+      <div className="toolbar">
+        <input className="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by site, landlord, rental, light..." />
         <button className="secondary-btn" onClick={reload}>Refresh</button>
-        {isAdmin && <button className="secondary-btn" onClick={allFilteredSelected ? clearSelectedExports : selectAllFiltered} disabled={!filteredIds.length}>{allFilteredSelected ? 'Clear Selected' : 'Select Filtered'}</button>}
-        {isAdmin && <button className="primary-btn" onClick={exportSelectedExcel} disabled={exporting || !selectedExportIds.length}>{exporting ? 'Exporting...' : `Export Selected Excel (${selectedExportIds.length})`}</button>}
+        {isAdmin && <button className="primary-btn" onClick={exportExcel} disabled={exporting}>{exporting ? 'Exporting...' : 'Export Excel'}</button>}
       </div>
-
-      {isAdmin && (
-        <div className="employee-filter-panel">
-          <div>
-            <strong>Filter by Employee</strong>
-            <small>Click a name to show only sites entered by that employee.</small>
-          </div>
-          <div className="employee-filter-list">
-            <button type="button" className={selectedEmployeeId === 'all' ? 'employee-pill active' : 'employee-pill'} onClick={() => setSelectedEmployeeId('all')}>
-              All Employees <span>{sites.length}</span>
-            </button>
-            {employeeFilters.map((employee) => {
-              const count = sites.filter((site) => Number(site.created_by_user_id) === Number(employee.id)).length;
-              return (
-                <button type="button" key={employee.id} className={Number(selectedEmployeeId) === Number(employee.id) ? 'employee-pill active' : 'employee-pill'} onClick={() => setSelectedEmployeeId(String(employee.id))}>
-                  {employee.name} <span>{count}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {isAdmin && selectedExportIds.length > 0 && <div className="alert info">{selectedExportIds.length} hoarding(s) selected for Excel export.</div>}
 
       {!isAdmin && !hasEmployeeCrud && <div className="alert info">Employees can add/view their own records. CRUD is enabled by default unless Admin blocks it or Agreement is created.</div>}
       {!isAdmin && hasEmployeeCrud && <div className="alert info">You can edit/delete your own records until Agreement is created. Once Agreement is created, only Admin can edit/delete.</div>}
 
       <div className="records-grid">
         {filtered.map((site) => (
-          <article key={site.id} className={selectedExportIds.includes(Number(site.id)) ? 'record-card selected-for-export' : 'record-card'}>
-            {isAdmin && (
-              <label className="record-select">
-                <input type="checkbox" checked={selectedExportIds.includes(Number(site.id))} onChange={() => toggleExportSelection(site.id)} />
-                Select for Excel
-              </label>
-            )}
+          <article key={site.id} className="record-card">
             <div className="record-head">
               <span>#{site.id}</span>
               <strong>{site.landlord_name}</strong>
             </div>
             <p>{site.hoarding_location}</p>
-            <small className="entered-by-line">Entered by: {site.created_by_name || '-'}</small>
             <div className="tags">
               <em>{site.area_sqft} sqft</em>
               <em>{site.rental_type}</em>
@@ -1195,7 +1124,7 @@ export default function App() {
         {loading && <div className="empty-state">Loading...</div>}
         {!loading && activeTab === 'dashboard' && <Dashboard sites={sites} />}
         {!loading && activeTab === 'add' && <SiteForm onCreated={loadSites} />}
-        {!loading && activeTab === 'records' && <Records sites={sites} reload={loadSites} user={user} users={users} />}
+        {!loading && activeTab === 'records' && <Records sites={sites} reload={loadSites} user={user} />}
         {!loading && activeTab === 'users' && user.role === 'admin' && <Users users={users} reloadUsers={loadUsers} currentUser={user} />}
       </main>
     </div>
