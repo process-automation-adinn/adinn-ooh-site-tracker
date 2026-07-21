@@ -18,7 +18,7 @@ const emptyForm = {
   side_type: 'Single',
   towards_1: '',
   towards_2: '',
-  interested_status: 'Interested',
+  interested_status: 'Not Selected',
   latitude: '',
   longitude: '',
   agreement_tenure: '3 Years',
@@ -101,7 +101,7 @@ function siteToForm(site) {
     side_type: site?.side_type || 'Single',
     towards_1: site?.towards_1 || '',
     towards_2: site?.towards_2 || '',
-    interested_status: site?.interested_status || 'Interested',
+    interested_status: site?.interested_status || 'Not Selected',
     latitude: site?.latitude ?? '',
     longitude: site?.longitude ?? '',
     agreement_tenure: site?.agreement_tenure || '3 Years',
@@ -492,6 +492,7 @@ function SiteForm({ onCreated, initialSite = null, mode = 'create', onSaved, onC
         <div className="grid two interest-status-grid">
           <Field label="Interest Status" required>
             <select value={form.interested_status} onChange={(e) => update('interested_status', e.target.value)} required>
+              <option>Not Selected</option>
               <option>Interested</option>
               <option>Not Interested</option>
             </select>
@@ -813,7 +814,7 @@ function Records({ sites, reload, user, users = [] }) {
               <em>{site.rental_type}</em>
               <em>{site.light_type}</em>
               <em>{site.side_type}</em>
-              <em className={site.interested_status === 'Not Interested' ? 'interest-tag not-interested' : 'interest-tag interested'}>{site.interested_status || 'Interested'}</em>
+              <em className={site.interested_status === 'Not Interested' ? 'interest-tag not-interested' : site.interested_status === 'Interested' ? 'interest-tag interested' : 'interest-tag not-selected'}>{site.interested_status || 'Not Selected'}</em>
               <em className={site.agreement_created ? 'agreement-tag created' : 'agreement-tag pending'}>{site.agreement_status || (site.agreement_created ? 'Agreement Created' : 'Agreement Not Created')}</em>
             </div>
             <div className="record-footer">
@@ -909,7 +910,7 @@ function SiteModal({ site, onClose }) {
           <Detail label="Advance" value={formatCurrency(site.advance_amount)} />
           <Detail label="Light" value={site.light_type} />
           <Detail label="Side" value={site.side_type} />
-          <Detail label="Interest Status" value={site.interested_status || 'Interested'} />
+          <Detail label="Interest Status" value={site.interested_status || 'Not Selected'} />
           <Detail label="Towards 1" value={site.towards_1 || '-'} />
           {site.side_type === 'Double' && <Detail label="Towards 2" value={site.towards_2 || '-'} />}
           <Detail label="GPS" value={mapsUrl ? <a href={mapsUrl} target="_blank" rel="noreferrer">Open in Google Maps</a> : '-'} />

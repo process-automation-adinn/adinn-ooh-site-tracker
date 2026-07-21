@@ -91,7 +91,7 @@ class SiteOut(BaseModel):
     side_type: str
     towards_1: str | None = None
     towards_2: str | None = None
-    interested_status: str = "Interested"
+    interested_status: str = "Not Selected"
     latitude: float | None = None
     longitude: float | None = None
     agreement_tenure: str

@@ -110,7 +110,7 @@ def ensure_schema_compatibility():
             "rent_amount": "DOUBLE PRECISION DEFAULT 0 NOT NULL",
             "agreement_created": "BOOLEAN DEFAULT false NOT NULL",
             "agreement_created_at": "TIMESTAMP NULL",
-            "interested_status": "VARCHAR(30) DEFAULT 'Interested' NOT NULL",
+            "interested_status": "VARCHAR(30) DEFAULT 'Not Selected' NOT NULL",
         }
     else:
         definitions = {
@@ -118,13 +118,19 @@ def ensure_schema_compatibility():
             "rent_amount": "FLOAT DEFAULT 0 NOT NULL",
             "agreement_created": "BOOLEAN DEFAULT 0 NOT NULL",
             "agreement_created_at": "DATETIME NULL",
-            "interested_status": "VARCHAR(30) DEFAULT 'Interested' NOT NULL",
+            "interested_status": "VARCHAR(30) DEFAULT 'Not Selected' NOT NULL",
         }
 
     with engine.begin() as conn:
         for column_name, ddl in definitions.items():
             if column_name not in existing:
                 conn.execute(sql_text(f"ALTER TABLE ooh_sites ADD COLUMN {column_name} {ddl}"))
+
+        # Keep the database default aligned with the form default without overwriting valid existing choices.
+        if "interested_status" in existing or "interested_status" in definitions:
+            if dialect == "postgresql":
+                conn.execute(sql_text("ALTER TABLE ooh_sites ALTER COLUMN interested_status SET DEFAULT 'Not Selected'"))
+            conn.execute(sql_text("UPDATE ooh_sites SET interested_status = 'Not Selected' WHERE interested_status IS NULL OR interested_status NOT IN ('Not Selected', 'Interested', 'Not Interested')"))
 
 
 def normalize_size_boxes(size_boxes_json: str | list | None, width_ft: float, height_ft: float, side_type: str) -> list[dict]:
@@ -381,9 +387,9 @@ def format_remarks_for_excel(remarks: dict | str | None) -> str:
 
 
 def normalize_interested_status(value: str | None) -> str:
-    cleaned = (value or "Interested").strip()
-    if cleaned not in {"Interested", "Not Interested"}:
-        raise HTTPException(status_code=400, detail="Interest status must be Interested or Not Interested")
+    cleaned = (value or "Not Selected").strip()
+    if cleaned not in {"Not Selected", "Interested", "Not Interested"}:
+        raise HTTPException(status_code=400, detail="Interest status must be Not Selected, Interested, or Not Interested")
     return cleaned
 
 
@@ -428,7 +434,7 @@ def site_to_out(site: OOHSite, db: Session) -> SiteOut:
         side_type=site.side_type,
         towards_1=site.towards_1,
         towards_2=site.towards_2,
-        interested_status=site.interested_status or "Interested",
+        interested_status=site.interested_status or "Not Selected",
         latitude=site.latitude,
         longitude=site.longitude,
         agreement_tenure=site.agreement_tenure,
@@ -694,7 +700,7 @@ def create_site(
     side_type: str = Form(...),
     towards_1: Optional[str] = Form(None),
     towards_2: Optional[str] = Form(None),
-    interested_status: str = Form("Interested"),
+    interested_status: str = Form("Not Selected"),
     latitude: Optional[float] = Form(None),
     longitude: Optional[float] = Form(None),
     agreement_tenure: str = Form(...),
@@ -773,7 +779,7 @@ def update_site(
     side_type: str = Form(...),
     towards_1: Optional[str] = Form(None),
     towards_2: Optional[str] = Form(None),
-    interested_status: str = Form("Interested"),
+    interested_status: str = Form("Not Selected"),
     latitude: Optional[float] = Form(None),
     longitude: Optional[float] = Form(None),
     agreement_tenure: str = Form(...),
@@ -921,7 +927,7 @@ def site_export_rows(site: OOHSite, db: Session) -> list[tuple[str, str]]:
         ("Advance", f"Rs {site.advance_amount or 0:,.0f}"),
         ("Light", site.light_type or ""),
         ("Side", site.side_type or ""),
-        ("Interest Status", site.interested_status or "Interested"),
+        ("Interest Status", site.interested_status or "Not Selected"),
         ("Towards 1", site.towards_1 or ""),
         ("Towards 2", site.towards_2 or ""),
         ("GPS", f"{site.latitude or ''}, {site.longitude or ''}".strip(', ')),
@@ -1017,7 +1023,7 @@ def build_sites_excel_response(sites: list[OOHSite], db: Session, filename: str 
             site.advance_amount,
             site.light_type,
             site.side_type,
-            site.interested_status or "Interested",
+            site.interested_status or "Not Selected",
             site.towards_1 or "",
             site.towards_2 or "",
             site.latitude or "",

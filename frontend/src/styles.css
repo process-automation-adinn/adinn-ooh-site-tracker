@@ -769,3 +769,9 @@ button:disabled { opacity: 0.65; cursor: not-allowed; transform: none; }
   color: #c2410c;
   border-color: rgba(194, 65, 12, 0.18);
 }
+
+.interest-tag.not-selected {
+  background: #f1f5f9;
+  color: #475569;
+  border-color: rgba(71, 85, 105, 0.18);
+}
