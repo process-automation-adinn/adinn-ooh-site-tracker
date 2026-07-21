@@ -18,6 +18,7 @@ const emptyForm = {
   side_type: 'Single',
   towards_1: '',
   towards_2: '',
+  interested_status: 'Interested',
   latitude: '',
   longitude: '',
   agreement_tenure: '3 Years',
@@ -100,6 +101,7 @@ function siteToForm(site) {
     side_type: site?.side_type || 'Single',
     towards_1: site?.towards_1 || '',
     towards_2: site?.towards_2 || '',
+    interested_status: site?.interested_status || 'Interested',
     latitude: site?.latitude ?? '',
     longitude: site?.longitude ?? '',
     agreement_tenure: site?.agreement_tenure || '3 Years',
@@ -487,6 +489,14 @@ function SiteForm({ onCreated, initialSite = null, mode = 'create', onSaved, onC
             <textarea value={form.landlord_location} onChange={(e) => update('landlord_location', e.target.value)} required rows="4" placeholder="Enter landlord address" />
           </Field>
         </div>
+        <div className="grid two interest-status-grid">
+          <Field label="Interest Status" required>
+            <select value={form.interested_status} onChange={(e) => update('interested_status', e.target.value)} required>
+              <option>Interested</option>
+              <option>Not Interested</option>
+            </select>
+          </Field>
+        </div>
       </section>
 
       <section className="form-section">
@@ -650,6 +660,7 @@ function Records({ sites, reload, user, users = [] }) {
         site.rental_type,
         site.light_type,
         site.side_type,
+        site.interested_status,
         site.created_by_name,
       ].join(' ').toLowerCase().includes(q);
       return matchesEmployee && matchesSearch;
@@ -753,8 +764,8 @@ function Records({ sites, reload, user, users = [] }) {
       <div className="toolbar records-toolbar">
         <input className="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by site, landlord, rental, light, employee..." />
         <button className="secondary-btn" onClick={reload}>Refresh</button>
-        {isAdmin && <button className="secondary-btn" onClick={allFilteredSelected ? clearSelectedExports : selectAllFiltered} disabled={!filteredIds.length}>{allFilteredSelected ? 'Clear Selected' : 'Select Filtered'}</button>}
-        {isAdmin && <button className="primary-btn" onClick={exportSelectedExcel} disabled={exporting || !selectedExportIds.length}>{exporting ? 'Exporting...' : `Export Selected Excel (${selectedExportIds.length})`}</button>}
+        <button className="secondary-btn" onClick={allFilteredSelected ? clearSelectedExports : selectAllFiltered} disabled={!filteredIds.length}>{allFilteredSelected ? 'Clear Selected' : 'Select Filtered'}</button>
+        <button className="primary-btn" onClick={exportSelectedExcel} disabled={exporting || !selectedExportIds.length}>{exporting ? 'Exporting...' : `Export Selected Excel (${selectedExportIds.length})`}</button>
       </div>
 
       {isAdmin && (
@@ -779,7 +790,7 @@ function Records({ sites, reload, user, users = [] }) {
         </div>
       )}
 
-      {isAdmin && selectedExportIds.length > 0 && <div className="alert info">{selectedExportIds.length} hoarding(s) selected for Excel export.</div>}
+      {selectedExportIds.length > 0 && <div className="alert info">{selectedExportIds.length} hoarding(s) selected for Excel export.</div>}
 
       {!isAdmin && !hasEmployeeCrud && <div className="alert info">Employees can add/view their own records. CRUD is enabled by default unless Admin blocks it or Agreement is created.</div>}
       {!isAdmin && hasEmployeeCrud && <div className="alert info">You can edit/delete your own records until Agreement is created. Once Agreement is created, only Admin can edit/delete.</div>}
@@ -787,12 +798,10 @@ function Records({ sites, reload, user, users = [] }) {
       <div className="records-grid">
         {filtered.map((site) => (
           <article key={site.id} className={selectedExportIds.includes(Number(site.id)) ? 'record-card selected-for-export' : 'record-card'}>
-            {isAdmin && (
-              <label className="record-select">
-                <input type="checkbox" checked={selectedExportIds.includes(Number(site.id))} onChange={() => toggleExportSelection(site.id)} />
-                Select for Excel
-              </label>
-            )}
+            <label className="record-select">
+              <input type="checkbox" checked={selectedExportIds.includes(Number(site.id))} onChange={() => toggleExportSelection(site.id)} />
+              Select for Excel
+            </label>
             <div className="record-head">
               <span>#{site.id}</span>
               <strong>{site.landlord_name}</strong>
@@ -804,6 +813,7 @@ function Records({ sites, reload, user, users = [] }) {
               <em>{site.rental_type}</em>
               <em>{site.light_type}</em>
               <em>{site.side_type}</em>
+              <em className={site.interested_status === 'Not Interested' ? 'interest-tag not-interested' : 'interest-tag interested'}>{site.interested_status || 'Interested'}</em>
               <em className={site.agreement_created ? 'agreement-tag created' : 'agreement-tag pending'}>{site.agreement_status || (site.agreement_created ? 'Agreement Created' : 'Agreement Not Created')}</em>
             </div>
             <div className="record-footer">
@@ -899,6 +909,7 @@ function SiteModal({ site, onClose }) {
           <Detail label="Advance" value={formatCurrency(site.advance_amount)} />
           <Detail label="Light" value={site.light_type} />
           <Detail label="Side" value={site.side_type} />
+          <Detail label="Interest Status" value={site.interested_status || 'Interested'} />
           <Detail label="Towards 1" value={site.towards_1 || '-'} />
           {site.side_type === 'Double' && <Detail label="Towards 2" value={site.towards_2 || '-'} />}
           <Detail label="GPS" value={mapsUrl ? <a href={mapsUrl} target="_blank" rel="noreferrer">Open in Google Maps</a> : '-'} />

@@ -754,3 +754,18 @@ button:disabled { opacity: 0.65; cursor: not-allowed; transform: none; }
     grid-template-columns: 1fr;
   }
 }
+
+/* Interest status and employee Excel export access */
+.interest-status-grid {
+  margin-top: 18px;
+}
+.interest-tag.interested {
+  background: #ecfdf3;
+  color: #047857;
+  border-color: rgba(4, 120, 87, 0.18);
+}
+.interest-tag.not-interested {
+  background: #fff7ed;
+  color: #c2410c;
+  border-color: rgba(194, 65, 12, 0.18);
+}

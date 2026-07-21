@@ -64,6 +64,7 @@ class OOHSite(Base):
     side_type: Mapped[str] = mapped_column(String(20), nullable=False)
     towards_1: Mapped[str | None] = mapped_column(String(255), nullable=True)
     towards_2: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    interested_status: Mapped[str] = mapped_column(String(30), default="Interested", nullable=False)
 
     latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     longitude: Mapped[float | None] = mapped_column(Float, nullable=True)

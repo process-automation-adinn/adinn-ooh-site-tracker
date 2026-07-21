@@ -110,6 +110,7 @@ def ensure_schema_compatibility():
             "rent_amount": "DOUBLE PRECISION DEFAULT 0 NOT NULL",
             "agreement_created": "BOOLEAN DEFAULT false NOT NULL",
             "agreement_created_at": "TIMESTAMP NULL",
+            "interested_status": "VARCHAR(30) DEFAULT 'Interested' NOT NULL",
         }
     else:
         definitions = {
@@ -117,6 +118,7 @@ def ensure_schema_compatibility():
             "rent_amount": "FLOAT DEFAULT 0 NOT NULL",
             "agreement_created": "BOOLEAN DEFAULT 0 NOT NULL",
             "agreement_created_at": "DATETIME NULL",
+            "interested_status": "VARCHAR(30) DEFAULT 'Interested' NOT NULL",
         }
 
     with engine.begin() as conn:
@@ -378,6 +380,13 @@ def format_remarks_for_excel(remarks: dict | str | None) -> str:
     return " | ".join(f"{SECTION_REMARK_LABELS.get(key, key)}: {value}" for key, value in parsed.items())
 
 
+def normalize_interested_status(value: str | None) -> str:
+    cleaned = (value or "Interested").strip()
+    if cleaned not in {"Interested", "Not Interested"}:
+        raise HTTPException(status_code=400, detail="Interest status must be Interested or Not Interested")
+    return cleaned
+
+
 def make_document_data(site: OOHSite | None) -> dict:
     return {
         "site_photo_uploaded": bool(site and site.site_photo_file),
@@ -419,6 +428,7 @@ def site_to_out(site: OOHSite, db: Session) -> SiteOut:
         side_type=site.side_type,
         towards_1=site.towards_1,
         towards_2=site.towards_2,
+        interested_status=site.interested_status or "Interested",
         latitude=site.latitude,
         longitude=site.longitude,
         agreement_tenure=site.agreement_tenure,
@@ -493,6 +503,7 @@ def apply_site_fields(
     side_type: str,
     towards_1: str | None,
     towards_2: str | None,
+    interested_status: str | None,
     latitude: float | None,
     longitude: float | None,
     agreement_tenure: str,
@@ -520,6 +531,7 @@ def apply_site_fields(
     site.side_type = side_type
     site.towards_1 = towards_1
     site.towards_2 = towards_2 if side_type == "Double" else None
+    site.interested_status = normalize_interested_status(interested_status)
     site.latitude = latitude
     site.longitude = longitude
     site.agreement_tenure = agreement_tenure
@@ -682,6 +694,7 @@ def create_site(
     side_type: str = Form(...),
     towards_1: Optional[str] = Form(None),
     towards_2: Optional[str] = Form(None),
+    interested_status: str = Form("Interested"),
     latitude: Optional[float] = Form(None),
     longitude: Optional[float] = Form(None),
     agreement_tenure: str = Form(...),
@@ -719,6 +732,7 @@ def create_site(
         side_type,
         towards_1,
         towards_2,
+        interested_status,
         latitude,
         longitude,
         agreement_tenure,
@@ -759,6 +773,7 @@ def update_site(
     side_type: str = Form(...),
     towards_1: Optional[str] = Form(None),
     towards_2: Optional[str] = Form(None),
+    interested_status: str = Form("Interested"),
     latitude: Optional[float] = Form(None),
     longitude: Optional[float] = Form(None),
     agreement_tenure: str = Form(...),
@@ -798,6 +813,7 @@ def update_site(
         side_type,
         towards_1,
         towards_2,
+        interested_status,
         latitude,
         longitude,
         agreement_tenure,
@@ -905,6 +921,7 @@ def site_export_rows(site: OOHSite, db: Session) -> list[tuple[str, str]]:
         ("Advance", f"Rs {site.advance_amount or 0:,.0f}"),
         ("Light", site.light_type or ""),
         ("Side", site.side_type or ""),
+        ("Interest Status", site.interested_status or "Interested"),
         ("Towards 1", site.towards_1 or ""),
         ("Towards 2", site.towards_2 or ""),
         ("GPS", f"{site.latitude or ''}, {site.longitude or ''}".strip(', ')),
@@ -974,7 +991,7 @@ def build_sites_excel_response(sites: list[OOHSite], db: Session, filename: str 
         "ID", "Entered By", "Hoarding Location", "Landlord Location", "Landlord Name",
         "Landlord Phone", "Landlord Email", "Secondary Name", "Secondary Phone",
         "Width ft", "Height ft", "Area sqft", "Size Boxes", "Rental Type", "Rent Rs", "Advance Rs",
-        "Light", "Side", "Towards 1", "Towards 2", "Latitude", "Longitude",
+        "Light", "Side", "Interest Status", "Towards 1", "Towards 2", "Latitude", "Longitude",
         "Agreement Tenure", "Start Date", "End Date", "Agreement Status", "Agreement Created At", "Site Photo", "Landlord Photo", "Aadhaar", "PAN", "Property Tax",
         "Passbook", "Remarks", "Created At"
     ]
@@ -1000,6 +1017,7 @@ def build_sites_excel_response(sites: list[OOHSite], db: Session, filename: str 
             site.advance_amount,
             site.light_type,
             site.side_type,
+            site.interested_status or "Interested",
             site.towards_1 or "",
             site.towards_2 or "",
             site.latitude or "",
@@ -1032,13 +1050,16 @@ def build_sites_excel_response(sites: list[OOHSite], db: Session, filename: str 
 
 
 @app.get("/api/sites/export/excel")
-def export_sites_excel(db: Session = Depends(get_db), _: User = Depends(require_admin)):
-    sites = db.query(OOHSite).order_by(OOHSite.created_at.desc()).all()
+def export_sites_excel(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    query = db.query(OOHSite)
+    if current_user.role != "admin":
+        query = query.filter(OOHSite.created_by_user_id == int(current_user.id))
+    sites = query.order_by(OOHSite.created_at.desc()).all()
     return build_sites_excel_response(sites, db, "adinn_ooh_sites.xlsx")
 
 
 @app.post("/api/sites/export/excel/selected")
-def export_selected_sites_excel(payload: dict, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+def export_selected_sites_excel(payload: dict, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     raw_ids = payload.get("site_ids") or []
     if not isinstance(raw_ids, list) or not raw_ids:
         raise HTTPException(status_code=400, detail="Select at least one hoarding to export")
